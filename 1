@@ -1,0 +1,150 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Threading.Tasks;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddSingleton<IUserRepository, UserRepository>();
+builder.Services.AddControllers();
+var app = builder.Build();
+
+app.UseMiddleware<ErrorHandlingMiddleware>(); 
+app.UseMiddleware<LoggingMiddleware>();
+
+app.UseRouting();
+app.UseEndpoints(endpoints =>
+{
+    endpoints.MapControllers();
+});
+
+app.Run();
+
+// User model
+public class User
+{
+    public int Id { get; set; }
+    [Required]
+    public string Name { get; set; }
+    [Required, EmailAddress]
+    public string Email { get; set; }
+}
+
+// User Repository Interface
+public interface IUserRepository
+{
+    List<User> GetUsers();
+    User GetUser(int id);
+    void AddUser(User user);
+    void UpdateUser(User user);
+    void DeleteUser(int id);
+}
+
+// User Repository Implementation
+public class UserRepository : IUserRepository
+{
+    private readonly List<User> Users = new();
+    private int _nextId = 1;
+
+    public List<User> GetUsers() => Users.OrderBy(u => u.Name).ToList();
+    public User GetUser(int id) => Users.FirstOrDefault(u => u.Id == id);
+    
+    public void AddUser(User user)
+    {
+        user.Id = _nextId++;
+        Users.Add(user);
+    }
+
+    public void UpdateUser(User user)
+    {
+        var existing = Users.FirstOrDefault(u => u.Id == user.Id);
+        if (existing != null)
+        {
+            existing.Name = user.Name;
+            existing.Email = user.Email;
+        }
+    }
+
+    public void DeleteUser(int id) => Users.RemoveAll(u => u.Id == id);
+}
+
+// User Controller
+[ApiController]
+[Route("api/users")]
+public class UserController : ControllerBase
+{
+    private readonly IUserRepository _repository;
+    public UserController(IUserRepository repository) => _repository = repository;
+
+    [HttpGet]
+    public IActionResult GetUsers() => Ok(_repository.GetUsers());
+
+    [HttpGet("{id}")]
+    public IActionResult GetUser(int id)
+    {
+        var user = _repository.GetUser(id);
+        return user == null ? NotFound(new { error = "User not found" }) : Ok(user);
+    }
+
+    [HttpPost]
+    public IActionResult CreateUser([FromBody] User user)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+        _repository.AddUser(user);
+        return Created($"api/users/{user.Id}", user);
+    }
+
+    [HttpPut("{id}")]
+    public IActionResult UpdateUser(int id, [FromBody] User user)
+    {
+        if (_repository.GetUser(id) == null)
+            return NotFound(new { error = "User not found" });
+        user.Id = id;
+        _repository.UpdateUser(user);
+        return NoContent();
+    }
+
+    [HttpDelete("{id}")]
+    public IActionResult DeleteUser(int id)
+    {
+        if (_repository.GetUser(id) == null)
+            return NotFound(new { error = "User not found" });
+        _repository.DeleteUser(id);
+        return NoContent();
+    }
+}
+
+// Logging Middleware
+public class LoggingMiddleware
+{
+    private readonly RequestDelegate _next;
+    public LoggingMiddleware(RequestDelegate next) => _next = next;
+    public async Task Invoke(HttpContext context)
+    {
+        Console.WriteLine($"Request: {context.Request.Method} {context.Request.Path}");
+        await _next(context);
+        Console.WriteLine($"Response: {context.Response.StatusCode}");
+    }
+}
+
+// Error Handling Middleware
+public class ErrorHandlingMiddleware
+{
+    private readonly RequestDelegate _next;
+    public ErrorHandlingMiddleware(RequestDelegate next) => _next = next;
+    public async Task Invoke(HttpContext context)
+    {
+        try { await _next(context); }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error: {ex.Message}");
+            context.Response.StatusCode = 500;
+            await context.Response.WriteAsJsonAsync(new { error = "Internal Server Error" });
+        }
+    }
+}
